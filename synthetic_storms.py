@@ -2,7 +2,7 @@ import pandas as pd
 from config import IBTRACKS_DIR
 import glob
 import os
-import nederhoff
+# import nederhoff
 import numpy as np
 from datetime import datetime, timedelta
 
@@ -24,7 +24,7 @@ BASINS = ["EP", "NA", "NI", "SI", "SP", "WP"]
 def consolidate_ibtracs():
     dfs = []
     for basin in BASINS:
-        files = sorted(glob.glob(IBTRACKS_DIR+f"/STORM_DATA_IBTRACS_{basin}*txt"))
+        files = files = sorted(glob.glob(IBTRACKS_DIR+f"/STORM_DATA_IBTRACS_{basin}*txt"))
         names = [
                 'year', 'month', 'tcnum', 'tstep',
                 'basin', 'lat', 'lon', 'minpres',
@@ -102,6 +102,8 @@ class SyntheticTCs:
     def write_adcirc_input(self, trackdata: pd.DataFrame, outfile):
         """Given the description of a tc track, create a fort.22 file
         """
+        trackdata['tstep'] -= trackdata['tstep'].min()
+        self.basin = BASINS[int(trackdata.iloc[0]['basin'])]
         fields = "BASIN,CY,YYYYMMDDHH,TECHNUM/MIN,TECH,TAU,LatN/S,LonE/W,VMAX,MSLP,TY,RAD,WINDCODE,RAD1,RAD2,RAD3,RAD4,RADP,RRP,MRD,GUSTS,EYE,SUBREGION,MAXSEAS,INITIALS,DIR,SPEED,STORMNAME,DEPTH,SEAS".split(",")
         lengths = {'BASIN': 2, 'CY': 3, 'YYYYMMDDHH': 11, 'TECHNUM/MIN': 3, 'TECH': 5, 'TAU': 4, 'LatN/S': 5, 'LonE/W': 6, 'VMAX': 4, 'MSLP': 5, 'TY': 3, 'RAD': 4, 'WINDCODE': 4, 'RAD1': 5, 'RAD2': 5, 'RAD3': 5, 'RAD4': 5, 'RADP': 5, 'RRP': 5, 'MRD': 4, 'GUSTS': 4, 'EYE': 4, 'SUBREGION': 4, 'MAXSEAS': 4, 'INITIALS': 4, 'DIR': 4, 'SPEED': 4, 'STORMNAME': 11, 'DEPTH': 2, 'SEAS': 2}
         default_values = {
@@ -160,6 +162,7 @@ class SyntheticTCs:
 
 if __name__ == "__main__":
     tcs = SyntheticTCs()
-    landfalls = tcs.select_storms()
-    print(landfalls)
-    tcs.write_adcirc_inputs("holland_inputs", landfalls)
+    trackdata_path = "/work2/09631/maxzhao88/frontera/data_generation/rand_storm_1_modified.csv"  
+    trackdata_df = pd.read_csv(trackdata_path)
+    output_path = "/work2/09631/maxzhao88/frontera/parametric_inputs/fort.22" 
+    tcs.write_adcirc_input(trackdata_df, output_path)
