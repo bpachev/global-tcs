@@ -4,6 +4,7 @@ from haversine import haversine_vector
 import math
 import netCDF4 as nc
 from datetime import datetime
+import argparse
 
 """A collection of utilities for working with ADCIRC wind files
 """
@@ -246,16 +247,23 @@ def make_owi_netcdf(outdir, wind_models, time, width=3, res=225, start=OWI_START
         ds.conventions = "CF-1.6 OWI-NWS13"
 
 if __name__ == "__main__":
-    import glob
-    basins = ["na", "ni", "wp"]
-    cat = 5
-    models = []
-    for basin in basins:
-        files = glob.glob(f"ibtracks_inputs/{basin}/cat{cat}/landfall/*csv")
-        # we need another layer of processing here
-        df = pd.read_csv(files[0])
-        models.append(HollandWinds(df.iloc[:40]))
-        print(files[0], len(df), len(df)/8)
 
-    make_owi_netcdf("global_mesh", models, np.linspace(0, 3600*24*5, 24*5+1))
+    # Setup argument parser
+    parser = argparse.ArgumentParser(description='Generate OWI NetCDF ADCIRC input')
+    parser.add_argument('--outdir', type=str, required=True, help='Output directory')
+    parser.add_argument('--width', type=int, default=3, help='Width parameter')
+    parser.add_argument('--res', type=int, default=225, help='Resolution parameter')
+    args = parser.parse_args()
+
+    models = []
+    csv_file_path = "/work2/09631/maxzhao88/frontera/data_generation/rand_storm_1_modified.csv"
+    df = pd.read_csv(csv_file_path)
+    rows_per_storm = 41
+    number_of_storms = len(df) // rows_per_storm
+    # print(number_of_storms)
+    for storm_index in range(number_of_storms):
+        storm_data = df.iloc[storm_index * rows_per_storm : (storm_index + 1) * rows_per_storm]
+        models.append(HollandWinds(storm_data))
+
+    make_owi_netcdf(args.outdir, models, np.linspace(0, 3600*24*5, 24*5+1), width=args.width, res=args.res)
     
