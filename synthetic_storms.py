@@ -5,6 +5,9 @@ import os
 import nederhoff
 import numpy as np
 from datetime import datetime, timedelta
+from collections import defaultdict
+from sklearn.metrics.pairwise import haversine_distances
+from itertools import zip_longest
 
 """
 Contains code for subsetting synthetic tropical cyclone (TC) data and outputting ADCIRC input files.
@@ -77,6 +80,94 @@ class SyntheticTCs:
         res = df[df["cat"]>=min_cat].groupby(["basin", "cat"]).head(bucket_size)
         return res
 
+    def separation(self, track1, track2):
+        """Determine the minimum separation in km between tracks
+        """
+
+        dists = haversine_distances(
+            np.deg2rad(track1[['lat', 'lon']].values),
+            np.deg2rad(track2[['lat', 'lon']].values)
+        )
+        return np.min(dists) * 6371
+
+    def write_packed_inputs(self, outdir, landfalls,
+            days_before=4, days_after=.5, max_basin_storms=1,
+            min_separation=1e3
+            ):
+        """Group storms into runs
+        """
+        n = len(landfalls)
+        # step 1 - extract dataframes
+        os.makedirs(outdir, exist_ok=True)
+        gb = self.tracks.groupby(["basin", "year", "tcnum"])
+        basin_storm_inds = defaultdict(list)
+        storm_tracks = []
+        i = 0
+        for idx, row in landfalls.iterrows():
+            key = (row["basin"], row["year"], row["tcnum"])
+            basin, year, num = map(int, key)
+            track = self.tracks.iloc[gb.indices.get(key)]
+            start = max(0, int(row['tstep']-days_before*8))
+            stop = min(len(track), int(row['tstep'] + days_after*8)+1)
+            basin_storm_inds[basin].append(i)
+            storm_tracks.append(track.iloc[start:stop])
+            i += 1
+ 
+        # step 2 - try to pack compatible storms together
+        # uses greedy algorithm
+        basin_storm_groups = {}
+        for basin, inds in basin_storm_inds.items():
+            groups = []
+            print("Basin", basin)
+            taken = set()
+            for i in range(len(inds)):
+                if i in taken: continue
+                curr = [inds[i]]
+                tot_bad = 0
+                for j in range(i+1, len(inds)):
+                    if len(curr) >= max_basin_storms: break 
+                    if j in taken: continue
+                    cand_ind = inds[j]
+                    cand_track = storm_tracks[cand_ind]
+                    good = True
+                    for k in curr:
+                        sep = self.separation(cand_track, storm_tracks[k])
+                        if sep < min_separation:
+                            good = False
+                            tot_bad += 1
+                            break
+                    if good:
+                        curr.append(cand_ind)
+                        taken.add(j)
+                    if tot_bad > 20: break
+                groups.append(curr)
+
+            assert sum([len(g) for g in groups]) == len(inds)
+            basin_storm_groups[basin] = groups
+            print(len(inds), len(groups), len(inds)/len(groups))
+
+        # step 3 - create outputs
+        all_groups = [groups for basin, groups in basin_storm_groups.items()]
+        total_runs = max(map(len, all_groups))
+        ndigits = len(str(total_runs))
+        runno = 0
+        for storms_list in zip_longest(*all_groups):
+            rundir = outdir+"/run"+str(runno).zfill(ndigits)
+            os.makedirs(rundir, exist_ok=True)
+            runno += 1
+            stormno = 0
+            inds = []
+            for storms in storms_list:
+                if storms is None: continue
+                for ind in storms:
+                    track = storm_tracks[ind]
+                    track.to_csv(rundir+f"/track{stormno:02d}.csv", index=False)
+                    stormno += 1
+                    inds.append(ind)
+            landfalls.iloc[inds].to_csv(rundir+f"/landfalls.csv")
+
+
+
 
     def write_adcirc_inputs(self,
             outdir,
@@ -89,7 +180,7 @@ class SyntheticTCs:
         for idx, row in landfalls.iterrows():
             key = (row["basin"], row["year"], row["tcnum"])
             basin, year, num = map(int, key)
-            track = gb[key]
+            track = self.tracks.iloc[gb.indices.get(key)]
             print(track)
             dirname = outdir+f"/{basin}_{year}_{num}"
             os.makedirs(dirname, exist_ok=True)
@@ -160,6 +251,7 @@ class SyntheticTCs:
 
 if __name__ == "__main__":
     tcs = SyntheticTCs()
-    landfalls = tcs.select_storms()
+    landfalls = tcs.select_storms(bucket_size=5000)
     print(landfalls)
-    tcs.write_adcirc_inputs("holland_inputs", landfalls)
+    tcs.write_packed_inputs("full_packed_inputs", landfalls, max_basin_storms=4)
+    #tcs.write_adcirc_inputs("holland_inputs", landfalls)

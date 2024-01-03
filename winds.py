@@ -23,6 +23,7 @@ deg2m=np.pi*radius/180.  # ds on cicle equals ds=r*dth - dth=pi/180
 one2ten=0.8928  # coefficient for going from 1m to 10m in velocities
 BLAdj=0.9
 pback = 1013
+OWI_START_DATE=datetime(2030, 1, 1)
 
 
 class HollandWinds:
@@ -95,7 +96,11 @@ class HollandWinds:
         pc = (1-lam) * self.minpres[last] + lam * self.minpres[curr]
         vtx = (1-lam) * self.vtrx[last] + lam * self.vtrx[curr]
         vty = (1-lam) * self.vtry[last] + lam * self.vtry[curr]
-        
+        lons = lons.copy()
+        lons[lons > 180] -= 360
+        lons[lons < -180] += 360
+        if lon0 > 180: lon0 -= 360
+        elif lon0 < -180: lon0 += 360
         coors = [x for x in zip(lats,lons)]
         r = haversine_vector(coors, len(coors)*[(lat0, lon0)]) * 1000
         r[r<1e-3] = 1e-3
@@ -174,7 +179,10 @@ def create_dummy_group(ds, start, time):
     pres.units = "mb"
 
 
-def make_owi_netcdf(outdir, wind_models, time, width=3, res=225, start=datetime(2030, 1, 1)):
+def make_tiered_offsets(base=3, ntiers=3, res=200):
+    pass
+
+def make_owi_netcdf(outdir, wind_models, time, width=3, res=225, start=OWI_START_DATE):
     """Create a multi-storm OWI NetCDF ADCIRC input
     """
 
