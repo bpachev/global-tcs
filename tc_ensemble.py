@@ -91,12 +91,13 @@ if __name__ == "__main__":
     args = sim.args
     if args.action == "setup":
        runsdir = args.runs
-       tides = sorted(glob.glob(args.tides+"/20*"))
+       # include only the runs with actual tides
+       tides = sorted(glob.glob(args.tides+"/20*/fort.67.nc"))
        runs = []
        for i, dirname in enumerate(sorted(glob.glob(runsdir+"/run*"))):
           run = {
                   "tracks": dirname,
-                  "tide": tides[i%len(tides)],
+                  "tide": tides[i%len(tides)].replace("/fort.67.nc", ""),
                   "outputs_dir": dirname+"/outputs",
                   "output_files": ["fort.61.nc"]
           }
@@ -109,9 +110,9 @@ if __name__ == "__main__":
         runs=runs,
         queue="normal",
         node_count=10,
-        runtime=8,
+        runtime=6,
         maxJobNodes=100,
-        maxJobRuntime=40,
+        maxJobRuntime=42,
         processors_per_node=50,
         no_writers=True,
         inputs_dir=os.path.expandvars("$WORK/../ls6/simulations/global-ml/ensemble_inputs"),
