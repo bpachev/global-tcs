@@ -46,7 +46,7 @@ class TCEnsemble(EnsembleSimulator):
 
     def __init__(self, **kwargs):
         super().__init__(
-           deps=['winds.py', 'downsample_tc_output.py'],
+           deps=['winds.py', 'downsample_tc_output.py', 'fix_tides.py'],
          **kwargs)
 
 
@@ -70,12 +70,15 @@ class TCEnsemble(EnsembleSimulator):
         job_dir = self.job_config['job_dir']
         adcprep_cache = job_dir+"/cache.zip"
         # copy zip archive, unpack cache, localize the fort.15 file
-        writers, workers = self.get_writers_and_workers()
+        #writers, workers = self.get_writers_and_workers()
+        new_rndy = au.snatch_form_params(run_dir+"/fort.15", ["RND"])["RND"]
         return (
                     f"unzip -d {run_dir} {adcprep_cache} > /dev/null;"+
-                    f"cd {run_dir};"+
-                    f"printf '{workers}\\n4\\nfort.14\\nfort.15\\n' | {job_dir}/adcprep > {run_dir}/adcprep.log"
-                    + f";cd {job_dir}"
+                    f"sed -i -e 's/*RND/{new_rndy}      ! RNDY /g' {run_dir}/PE*/fort.15"+
+                    f"python3 {job_dir}/fix_tides.py {run_dir}"                    
+#f"cd {run_dir};"+
+                    #f"printf '{workers}\\n4\\nfort.14\\nfort.15\\n' | {job_dir}/adcprep > {run_dir}/adcprep.log"
+                    #+ f";cd {job_dir}"
             )
 
     def make_postprocess_command(self, run, run_dir):
