@@ -54,6 +54,7 @@ class TCEnsemble(EnsembleSimulator):
         parser.add_argument("--runs", required=True)
         parser.add_argument("--tides", required=True)
         parser.add_argument("--cache", required=True)
+        parser.add_argument("--retry", required=False, action="store_true")
 
     def setup_job(self):
         super().setup_job()
@@ -97,6 +98,7 @@ if __name__ == "__main__":
        # include only the runs with actual tides
        tides = sorted(glob.glob(args.tides+"/20*/fort.67.nc"))
        runs = []
+       retry = args.retry is True
        for i, dirname in enumerate(sorted(glob.glob(runsdir+"/run*"))):
           run = {
                   "tracks": dirname,
@@ -104,11 +106,17 @@ if __name__ == "__main__":
                   "outputs_dir": dirname+"/outputs",
                   "output_files": ["fort.61.nc"]
           }
+          if retry:
+            f61 = dirname+"/outputs/fort.61.nc"
+            if not os.path.exists(f61): continue
+            if os.path.getsize(f61) > 5e5: continue
+
           runs.append(run)
 
     else:
         runs = []
 
+    print(runs[0], runs[-1], len(runs))
     sim.run(
         runs=runs,
         queue="normal",
