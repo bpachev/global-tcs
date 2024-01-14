@@ -107,24 +107,28 @@ if __name__ == "__main__":
                   "output_files": ["fort.61.nc"]
           }
           if retry:
+            rfile = dirname+"/retrying"
+            if os.path.exists(rfile): continue
             f61 = dirname+"/outputs/fort.61.nc"
-            if not os.path.exists(f61): continue
-            if os.path.getsize(f61) > 5e5: continue
+            if not os.path.exists(f61):
+              if not os.path.exists(dirname+"/outputs/failed"):
+                continue
+            elif os.path.getsize(f61) > 5e5: continue
 
           runs.append(run)
+          os.system(f"touch {rfile}")
 
     else:
         runs = []
 
-    print(runs[0], runs[-1], len(runs))
     sim.run(
         runs=runs,
         queue="normal",
         node_count=10,
-        runtime=6,
+        runtime=4,
         #queue="development",node_count=1,runtime=2,
         maxJobNodes=100,
-        maxJobRuntime=42,
+        maxJobRuntime=48,
         processors_per_node=50,
         no_writers=True,
         inputs_dir=os.path.expandvars("$WORK/../ls6/simulations/global-ml/ensemble_inputs"),
