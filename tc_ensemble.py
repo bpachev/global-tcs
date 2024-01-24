@@ -38,8 +38,10 @@ def setup_tc_run(run, run_dir, tide_fac_path=None):
     time = np.linspace(0, rnday*24*3600, int(rnday*24)+1)
     winds.make_owi_netcdf(run_dir, wind_models, time,
         start=owi_start_date, width=8, res=250)
+    #avoid race conditions with shared tide_fac.out file
+    os.chdir(run_dir)
     tides = au.compute_tides(rnday+hotstart_days, base_date, tide_fac_path)
-    au.set_tides(fort15, tides)
+    au.set_tides("fort.15", tides)
 
 
 class TCEnsemble(EnsembleSimulator):
@@ -110,13 +112,12 @@ if __name__ == "__main__":
             rfile = dirname+"/retrying"
             if os.path.exists(rfile): continue
             f61 = dirname+"/outputs/fort.61.nc"
-            if not os.path.exists(f61):
-              if not os.path.exists(dirname+"/outputs/failed"):
-                continue
-            elif os.path.getsize(f61) > 5e5: continue
+            if os.path.exists(f61):
+                if os.path.getsize(f61) > 5e5: continue
 
           runs.append(run)
           os.system(f"touch {rfile}")
+       print(runs[:1], runs[-1:])
 
     else:
         runs = []
@@ -126,7 +127,7 @@ if __name__ == "__main__":
         queue="normal",
         node_count=10,
         runtime=4,
-        #queue="development",node_count=1,runtime=2,
+        #queue="development",node_count=.1,runtime=2,
         maxJobNodes=100,
         maxJobRuntime=48,
         processors_per_node=50,
