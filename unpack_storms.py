@@ -8,6 +8,7 @@ import pandas as pd
 import glob
 from synthetic_storms import BASINS
 import time
+from multiprocessing import Pool
 earth_radius = 6371
 
 def partition_points(tracks, tree, radius=1e3):
@@ -73,11 +74,11 @@ def unpack_storms(indir, outdir, mesh_tree, stat_tree, radius=1e3):
    for f in sorted(glob.glob(f"{indir}/track*csv")):
      dfs.append(pd.read_csv(f))
 
-   mesh_ind_list, mesh_dist_list = partition_points(dfs, mesh_tree)
-   stat_ind_list, stat_dist_list = partition_points(dfs, stat_tree)
-   ark = np.load(f"{indir}/outputs/maxele.npz")
-   station_ds = nc.Dataset(f"{indir}/outputs/fort.61.nc")
-   station_zeta = station_ds["zeta"][:]
+   mfile = f"{indir}/outputs/maxele.npz"
+   sfile = f"{indir}/outputs/fort.61.nc"
+   if not os.path.exists(mfile) or not os.path.exists(sfile):
+     print(f"missing outputs for {indir}")
+     return
 
    for i in range(len(dfs)):
      row = landfalls.iloc[i]
@@ -86,15 +87,22 @@ def unpack_storms(indir, outdir, mesh_tree, stat_tree, radius=1e3):
      dirname = f"{outdir}/{basin}/category{int(row['cat'])}/"
      storm_id = f"{int(row['year'])}{int(row['month']):02d}{int(row['tcnum']):02d}{int(row['tstep']):03d}"
      dirname += storm_id
-     print(dirname)
+     if os.path.exists(dirname+"/elevation.hdf5"):
+       print("Skipping ", indir) 
+       return
+     if not i:
+       mesh_ind_list, mesh_dist_list = partition_points(dfs, mesh_tree)
+       stat_ind_list, stat_dist_list = partition_points(dfs, stat_tree)
+       ark = np.load(f"{indir}/outputs/maxele.npz")
+       station_ds = nc.Dataset(f"{indir}/outputs/fort.61.nc")
+       station_zeta = station_ds["zeta"][:]
+
      #print(row, dfs[i].iloc[0])
      os.makedirs(dirname, exist_ok=True)
      dfs[i].to_csv(dirname+"/track.csv", index=False)
      with h5py.File(dirname+"/elevation.hdf5", "w") as ds:
         mesh_inds = mesh_ind_list[i]
         station_inds = stat_ind_list[i]
-        print(ark['zeta'][mesh_inds].max())
-        print(np.rad2deg(mesh_tree.data[mesh_inds]).mean(), row['lat'], row['lon']) 
         ds['zeta_max'] = ark['zeta'][mesh_inds]
         ds['time_of_zeta_max'] = ark['zeta_time']
         ds['mesh_inds'] = mesh_inds
@@ -104,7 +112,7 @@ def unpack_storms(indir, outdir, mesh_tree, stat_tree, radius=1e3):
         ds['landfall_tstep'] = row['tstep']
      
      if os.path.exists(f"{indir}/tides.json"):
-       os.system(f"cp {indir}/tides.json {outdir}")
+       os.system(f"cp {indir}/tides.json {dirname}")
      else:
        print(f"missing tides {indir}")
      
@@ -128,8 +136,11 @@ if __name__ == '__main__':
    else:
      with open("trees.pkl", "rb") as fp: mesh_tree, stat_tree = pickle.load(fp)
 
-   for run in sorted(glob.glob(runsdir+"/run*")):
-     print("processing", run)
-     unpack_storms(run, outdir, mesh_tree, stat_tree)
-     break
+   dirs = sorted(glob.glob(runsdir+"/run*"))
+   print("processing ", len(dirs), " runs")
+   from functools import partial
+   func = partial(unpack_storms, outdir=outdir, mesh_tree=mesh_tree, stat_tree=stat_tree)
+   for d in dirs: func(d)
+   #with Pool(32) as p:
+   #  p.map(func, dirs) 
     
