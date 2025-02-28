@@ -4,6 +4,10 @@ import glob
 import os
 # import nederhoff
 import numpy as np
+import h5py
+import geopandas as gpd
+import json
+from shapely.geometry import Point, LineString
 from datetime import datetime, timedelta
 from collections import defaultdict
 from sklearn.metrics.pairwise import haversine_distances
@@ -22,6 +26,7 @@ KMH_TO_KNOTS = 1/KNOTS_TO_KMH
 KM_TO_NM = 0.539957
 ONE_TO_TEN = 0.8928  
 TEN_TO_ONE = 1./ONE_TO_TEN
+EARTH_RADIUS_KM = 6371
 
 BASINS = ["EP", "NA", "NI", "SI", "SP", "WP"]
 
@@ -45,6 +50,51 @@ def consolidate_ibtracs():
     tracks = pd.concat(dfs)
     tracks.to_csv("ibtracs_consolidated.csv", index=False)
 
+class TrackProcMapper:
+    """Maps storm tracks to process numbers"""
+
+    geo_file = "proc_hulls.geojson"
+
+    def __init__(self, proc_mapping_file="node_to_process.hdf5", coord_file="global_mesh_points.hdf5"):
+        """Initialize mapper."""
+
+        if not os.path.exists(self.geo_file):
+          with h5py.File(proc_mapping_file) as procds:
+            self.node_to_proc = procds["node_to_proc"][:]
+
+          with h5py.File(coord_file) as coordds:
+            self.lats, self.lons = coordds["lat"][:], coordds["lon"][:]
+
+          points = [Point(xy) for xy in zip(self.lons, self.lats)]
+          gdf = gpd.GeoDataFrame({'proc': self.node_to_proc, 'geometry': points}, crs="EPSG:4326")
+          # Compute convex hulls by group
+          convex_hulls = gdf.dissolve(by="proc").convex_hull
+
+          # Convert to a new GeoDataFrame
+          convex_hull_gdf = gpd.GeoDataFrame(convex_hulls, columns=["geometry"])
+          self.convex_hull_gdf = convex_hull_gdf.set_geometry("geometry")
+          self.convex_hull_gdf.to_file(self.geo_file)
+        else:
+          self.convex_hull_gdf = gpd.read_file(self.geo_file)
+        
+        hull_lats, hull_lons, hull_procs = [], [], []
+        for i, row in self.convex_hull_gdf.iterrows():
+          for lon, lat in row.geometry.exterior.coords:
+            hull_lats.append(lat)
+            hull_lons.append(lon)
+            hull_procs.append(i)
+        self.coords = np.deg2rad(np.column_stack([hull_lats, hull_lons]))
+        self.node_to_proc = np.array(hull_procs)
+
+    def get_track_procs(self, track, thresh=500):
+        """Get active processes for given track."""
+        
+        dists = haversine_distances(self.coords, np.deg2rad(track[['lat', 'lon']].values)) * EARTH_RADIUS_KM
+        min_dists = dists.min(axis=1)
+        active_nodes = np.where(min_dists<=thresh)
+        return np.unique(self.node_to_proc[active_nodes])
+
+    def get_num_procs(self): return len(self.convex_hull_gdf)
 
 class SyntheticTCs:
     """Represents a collection of synthetic TCs
@@ -109,6 +159,20 @@ class SyntheticTCs:
         pseudolandfalls.to_csv('pseudolandfalls.csv', index=False)
         return pseudolandfalls
 
+    def select_by_id(self, storm_id, basin):
+        """Select a storm based on the ID and basin
+        """
+
+        if type(basin) is str:
+          basin = BASINS.index(basin)
+        year = int(storm_id[:4])
+        month = int(storm_id[4:6])
+        tcnum = int(storm_id[6:8])
+        tstep = int(storm_id[8:])
+        mask = ( (self.tracks["year"] == year) & (self.tracks["tcnum"] == tcnum)
+                 & (self.tracks["basin"] == basin))
+        return self.tracks[mask]
+
     def select_storms(self, landfalls="landfall.csv", bucket_size=25, min_cat=2, max_cat=5):
         """Select storms across basins
         """
@@ -125,7 +189,7 @@ class SyntheticTCs:
             np.deg2rad(track1[['lat', 'lon']].values),
             np.deg2rad(track2[['lat', 'lon']].values)
         )
-        return np.min(dists) * 6371
+        return np.min(dists) * EARTH_RADIUS_KM
 
     def write_packed_inputs(self, outdir, landfalls,
             days_before=4, days_after=.5, max_basin_storms=1,
@@ -232,6 +296,7 @@ def write_adcirc_input(
     outfile,
     start_time=datetime(year=2030, day=1, month=1),
     spinup_days=0,
+    total_days=None,
     ):
     """Given the description of a tc track, create a fort.22 file
     """
@@ -262,6 +327,11 @@ def write_adcirc_input(
     with open(outfile, 'w') as fp:
         prepended = False
         spinup_delta = spinup_days*24*3600
+        if total_days is not None:
+          # safety factor step
+          steps_to_add = 1 + int(total_days*8+1) - len(trackdata)
+        else: steps_to_add = 0
+
         for idx, row in trackdata.iterrows():
             # we can't use Pandas because of the fixed-width format
             # this is NWS=8 format
@@ -302,9 +372,75 @@ def write_adcirc_input(
             line = ",".join([vals[field] for field in fields])
             fp.write(line+"\n")
 
+        if steps_to_add:
+            dummy_vals = {**vals}
+            dummy_vals["RAD"] = 0
+            dummy_vals["RAD1"] = 0
+            dummy_vals["MRD"] = 0
+            dummy_vals["VMAX"] = 0
+            for step in range(steps_to_add):
+              dummy_vals["YYYYMMDDHH"] = (start_time + timedelta(
+                 seconds=spinup_delta + 3*3600*(1+step+trackdata['tstep'].iloc[-1]))).strftime("%Y%m%d%H")
+              for k in dummy_vals: dummy_vals[k] = str(dummy_vals[k]).rjust(lengths[k])
+              fp.write(','.join([dummy_vals[field] for field in fields]) + '\n')
+
+
+def convert_packed_inputs(indir, outdir, mapper = None):
+    """Convert an input directory from the old packing scheme to the new."""
+
+    if mapper is None:
+        mapper = TrackProcMapper()
+
+    landfalls = pd.read_csv(indir+"/landfalls.csv")
+    tracks = list(glob.glob(indir+"/track*csv"))
+    if len(tracks) != len(landfalls):
+        raise RuntimeError(f"Number of track files ({len(tracks)}) doesn't match landfall files ({len(landfalls)})")
+
+    os.makedirs(outdir, exist_ok=True)
+
+    track_dfs = [pd.read_csv(trackfile) for trackfile in tracks]
+
+    track_procs = [mapper.get_track_procs(df) for df in track_dfs]
+    used_procs = set()
+    partition_info = {"procs":{}, "input_files": {}}
+    include = []
+    rnday = 0
+    for i, procs in enumerate(track_procs):
+      if any(p in procs for p in used_procs): continue
+      include.append(i)
+      df = track_dfs[i]
+      rnday = max(rnday, (len(df)-1)/8)
+      for p in procs: used_procs.add(p)
+      total = len(include)
+    # we first have to get the max overall rnday, then do this
+    # so that the fort.22 file will have padding at the end as well
+    for j, i in enumerate(include):
+      df = track_dfs[i]
+      fort22 = outdir+f"/track{j:02d}.22"
+      write_adcirc_input(df,fort22, spinup_days=7, total_days=rnday)
+      # convert from np to int so JSON won't freak out
+      partition_info["procs"][j] = [int(p) for p in procs]
+      partition_info["input_files"][j] = os.path.abspath(fort22)
+      df.to_csv(f"{outdir}/track{j:02d}.csv", index=False)
+
+    landfalls = landfalls.iloc[include]
+    landfalls.to_csv(outdir+"/landfalls.csv", index=False)
+    num_procs = mapper.get_num_procs()
+    unused = [i for i in range(num_procs) if i not in used_procs]
+    partition_info["unused"] = unused
+    partition_info["rnday"] = rnday
+    with open(outdir+"/partition_info.json", "w") as fp: json.dump(partition_info, fp)
+    # return used / available
+    return len(landfalls), len(track_dfs)
 
 if __name__ == "__main__":
-    tcs = SyntheticTCs()
+    
+    convert_packed_inputs("packed_inputs/run00", "new_packed_inputs/run00")
+
+    #tcs = SyntheticTCs()
+    #track = tcs.select_by_id("51720802025", "NA")
+    #print(track)
+    """
     pseudolandfalls = tcs.analyze_bypassing(min_cat=2)
     selected = pseudolandfalls.groupby('basin').head(8000)
     tcs.write_packed_inputs("full_bypassing_inputs_above_cat2", selected, max_basin_storms=4)
@@ -312,3 +448,4 @@ if __name__ == "__main__":
     #print(landfalls)
     tcs.write_packed_inputs("cat1_packed_inputs", landfalls, max_basin_storms=4)
     #tcs.write_adcirc_inputs("holland_inputs", landfalls)
+    """
